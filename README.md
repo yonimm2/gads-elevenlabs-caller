@@ -38,7 +38,7 @@ STATUS_CALLBACK_URL=                 # optional Twilio status webhook target
 ELEVENLABS_POSTCALL_SECRET=          # webhook secret from ElevenLabs post-call settings
 RESEND_API_KEY=                      # Resend API key for email notifications
 EMAIL_FROM=notifications@example.com
-EMAIL_TO=you@example.com[,teammate@example.com]
+EMAIL_TO=you@example.com[,teammate@example.com] # defaults to yonimm2@gmail.com if unset
 PORT=3000
 ```
 

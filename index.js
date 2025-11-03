@@ -19,7 +19,7 @@ const {
   ELEVENLABS_POSTCALL_SECRET,
   RESEND_API_KEY,
   EMAIL_FROM,
-  EMAIL_TO,
+  EMAIL_TO = 'yonimm2@gmail.com',
   PORT = '3000',
 } = process.env;
 

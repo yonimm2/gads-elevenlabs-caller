@@ -463,6 +463,114 @@ async function fetchConversationDetails(conversationId) {
   return parsedJson || rawText;
 }
 
+function cloneBodyForLeadProcessing(body) {
+  if (!body) {
+    return {};
+  }
+  if (typeof body === 'object') {
+    try {
+      return JSON.parse(JSON.stringify(body));
+    } catch (error) {
+      console.warn('[LEAD] Failed to deep-clone body; falling back to shallow copy.', error);
+      return { ...body };
+    }
+  }
+  if (typeof body === 'string') {
+    try {
+      const parsed = JSON.parse(body);
+      return parsed && typeof parsed === 'object' ? parsed : { raw: body };
+    } catch {
+      return { raw: body };
+    }
+  }
+  return {};
+}
+
+function normalizeQueryValue(value) {
+  if (Array.isArray(value)) {
+    return value[0];
+  }
+  return value;
+}
+
+async function processLeadBackground({ providedKey, body }) {
+  try {
+    if (!WEBHOOK_SHARED_SECRET) {
+      console.warn('[LEAD] WEBHOOK_SHARED_SECRET missing; skipping lead processing.');
+      return;
+    }
+    if (providedKey !== WEBHOOK_SHARED_SECRET) {
+      console.warn('[LEAD] Invalid shared secret provided; skipping lead processing.');
+      return;
+    }
+
+    const logBody = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+    console.log('Incoming keys:', Object.keys(logBody));
+    console.log('Body snapshot:', JSON.stringify(body || {}, null, 2));
+
+    const { Name, leadPhone } = extractLeadData(body);
+    const normalizedPhone = normalizeToE164(leadPhone, 'US');
+    console.log('Extracted fields:', { Name, leadPhone, normalizedPhone });
+
+    if (!normalizedPhone) {
+      console.warn('Lead received with invalid or missing phone number.', {
+        Name,
+        leadPhone,
+      });
+      return;
+    }
+
+    if (!XI_API_KEY || !ELEVENLABS_AGENT_ID || !ELEVENLABS_AGENT_PHONE_NUMBER_ID) {
+      console.error('Lead webhook missing ElevenLabs configuration variables.');
+      return;
+    }
+
+    const safeName = (Name || '').trim();
+    const dynamicVariables = {
+      Name: safeName || 'Prospect',
+    };
+
+    const elevenLabsPayload = {
+      agent_id: ELEVENLABS_AGENT_ID,
+      agent_phone_number_id: ELEVENLABS_AGENT_PHONE_NUMBER_ID,
+      to_number: normalizedPhone,
+      conversation_initiation_client_data: {
+        dynamic_variables: dynamicVariables,
+        source_info: { source: 'twilio', version: '1.0.0' },
+      },
+    };
+
+    console.log('[EL OUTBOUND] scheduling outbound call.', {
+      delayMs: OUTBOUND_DELAY_MS,
+      etaIso: new Date(Date.now() + OUTBOUND_DELAY_MS).toISOString(),
+      Name: dynamicVariables.Name,
+      normalizedPhone,
+    });
+
+    setTimeout(() => {
+      sendElevenLabsOutboundCall(elevenLabsPayload)
+        .then(({ ok, status, rawText, parsedJson }) => {
+          if (ok) {
+            console.log('[EL OUTBOUND] delayed call succeeded.', {
+              status,
+              parsedJson,
+            });
+          } else {
+            console.error('[EL OUTBOUND] delayed call failed.', {
+              status,
+              raw: rawText?.slice(0, 2000) || null,
+            });
+          }
+        })
+        .catch((error) => {
+          console.error('[EL OUTBOUND] delayed call threw.', (error && error.stack) || error);
+        });
+    }, OUTBOUND_DELAY_MS);
+  } catch (error) {
+    console.error('[LEAD] Failed to process webhook after responding.', error);
+  }
+}
+
 app.post('/gads/lead', (req, res) => {
   const contentType = req.headers['content-type'] || '';
   const bodyType = typeof req.body;
@@ -485,88 +593,23 @@ app.post('/gads/lead', (req, res) => {
   console.log('Incoming body preview:', bodyPreview);
 
   // Immediately acknowledge the form submission so Elementor always shows success
-  res.status(200).json({ success: true });
+  try {
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('[LEAD] Failed to send immediate acknowledgement.', error);
+    return;
+  }
+
+  const providedKey = normalizeQueryValue(req.query?.key);
+  const clonedBody = cloneBodyForLeadProcessing(req.body);
+
+  console.log('[LEAD] Acknowledged request; running background workflow.');
 
   // Run the rest of the lead processing logic in the background
-  setImmediate(async () => {
-    try {
-      const providedKey = req.query?.key;
-      if (!WEBHOOK_SHARED_SECRET) {
-        console.warn('[LEAD] WEBHOOK_SHARED_SECRET missing; skipping lead processing.');
-        return;
-      }
-      if (providedKey !== WEBHOOK_SHARED_SECRET) {
-        console.warn('[LEAD] Invalid shared secret provided; skipping lead processing.');
-        return;
-      }
-
-      const body = req.body && typeof req.body === 'object' ? req.body : {};
-      const logBody =
-        body && typeof body === 'object' && !Array.isArray(body) ? body : {};
-      console.log('Incoming keys:', Object.keys(logBody));
-      console.log('Body snapshot:', JSON.stringify(body || {}, null, 2));
-
-      const { Name, leadPhone } = extractLeadData(body);
-      const normalizedPhone = normalizeToE164(leadPhone, 'US');
-      console.log('Extracted fields:', { Name, leadPhone, normalizedPhone });
-
-      if (!normalizedPhone) {
-        console.warn('Lead received with invalid or missing phone number.', {
-          Name,
-          leadPhone,
-        });
-        return;
-      }
-
-      if (!XI_API_KEY || !ELEVENLABS_AGENT_ID || !ELEVENLABS_AGENT_PHONE_NUMBER_ID) {
-        console.error('Lead webhook missing ElevenLabs configuration variables.');
-        return;
-      }
-
-      const safeName = (Name || '').trim();
-      const dynamicVariables = {
-        Name: safeName || 'Prospect',
-      };
-
-      const elevenLabsPayload = {
-        agent_id: ELEVENLABS_AGENT_ID,
-        agent_phone_number_id: ELEVENLABS_AGENT_PHONE_NUMBER_ID,
-        to_number: normalizedPhone,
-        conversation_initiation_client_data: {
-          dynamic_variables: dynamicVariables,
-          source_info: { source: 'twilio', version: '1.0.0' },
-        },
-      };
-
-      console.log('[EL OUTBOUND] scheduling outbound call.', {
-        delayMs: OUTBOUND_DELAY_MS,
-        etaIso: new Date(Date.now() + OUTBOUND_DELAY_MS).toISOString(),
-        Name: dynamicVariables.Name,
-        normalizedPhone,
-      });
-
-      setTimeout(() => {
-        sendElevenLabsOutboundCall(elevenLabsPayload)
-          .then(({ ok, status, rawText, parsedJson }) => {
-            if (ok) {
-              console.log('[EL OUTBOUND] delayed call succeeded.', {
-                status,
-                parsedJson,
-              });
-            } else {
-              console.error('[EL OUTBOUND] delayed call failed.', {
-                status,
-                raw: rawText?.slice(0, 2000) || null,
-              });
-            }
-          })
-          .catch((error) => {
-            console.error('[EL OUTBOUND] delayed call threw.', (error && error.stack) || error);
-          });
-      }, OUTBOUND_DELAY_MS);
-    } catch (error) {
-      console.error('[LEAD] Failed to process webhook after responding.', error);
-    }
+  setImmediate(() => {
+    processLeadBackground({ providedKey, body: clonedBody }).catch((error) => {
+      console.error('[LEAD] Background workflow rejected.', error);
+    });
   });
 });
 

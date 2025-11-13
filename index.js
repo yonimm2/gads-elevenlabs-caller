@@ -463,7 +463,7 @@ async function fetchConversationDetails(conversationId) {
   return parsedJson || rawText;
 }
 
-app.post('/gads/lead', async (req, res) => {
+app.post('/gads/lead', (req, res) => {
   const contentType = req.headers['content-type'] || '';
   const bodyType = typeof req.body;
   let bodyPreview;
@@ -484,87 +484,88 @@ app.post('/gads/lead', async (req, res) => {
   console.log('Incoming body type:', bodyType);
   console.log('Incoming body preview:', bodyPreview);
 
-  try {
-    const providedKey = req.query?.key;
-    if (!WEBHOOK_SHARED_SECRET || providedKey !== WEBHOOK_SHARED_SECRET) {
-      console.warn('Rejected lead webhook due to invalid shared secret.');
-      return res.status(401).json({ success: false, message: 'Invalid shared secret.' });
-    }
+  res.status(200).json({ success: true });
 
-    const body = req.body;
-    const logBody =
-      body && typeof body === 'object' && !Array.isArray(body) ? body : {};
-    console.log('Incoming keys:', Object.keys(logBody));
-    console.log('Body snapshot:', JSON.stringify(body || {}, null, 2));
+  setImmediate(async () => {
+    try {
+      const providedKey = req.query?.key;
+      if (!WEBHOOK_SHARED_SECRET) {
+        console.warn('[LEAD] WEBHOOK_SHARED_SECRET missing; skipping lead processing.');
+        return;
+      }
+      if (providedKey !== WEBHOOK_SHARED_SECRET) {
+        console.warn('[LEAD] Invalid shared secret provided; skipping lead processing.');
+        return;
+      }
 
-    const { Name, leadPhone } = extractLeadData(body);
-    const normalizedPhone = normalizeToE164(leadPhone, 'US');
-    console.log('Extracted fields:', { Name, leadPhone, normalizedPhone });
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const logBody =
+        body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+      console.log('Incoming keys:', Object.keys(logBody));
+      console.log('Body snapshot:', JSON.stringify(body || {}, null, 2));
 
-    if (!normalizedPhone) {
-      console.warn('Lead received with invalid or missing phone number.', {
-        Name,
-        leadPhone,
-      });
-      return res.status(200).json({ success: true, message: 'Lead processed without call.' });
-    }
+      const { Name, leadPhone } = extractLeadData(body);
+      const normalizedPhone = normalizeToE164(leadPhone, 'US');
+      console.log('Extracted fields:', { Name, leadPhone, normalizedPhone });
 
-    if (!XI_API_KEY || !ELEVENLABS_AGENT_ID || !ELEVENLABS_AGENT_PHONE_NUMBER_ID) {
-      console.error('Lead webhook missing ElevenLabs configuration variables.');
-      return res.status(500).json({ success: false, message: 'ElevenLabs not configured.' });
-    }
-
-    const safeName = (Name || '').trim();
-    const dynamicVariables = {
-      Name: safeName || 'Prospect',
-    };
-
-    const elevenLabsPayload = {
-      agent_id: ELEVENLABS_AGENT_ID,
-      agent_phone_number_id: ELEVENLABS_AGENT_PHONE_NUMBER_ID,
-      to_number: normalizedPhone,
-      conversation_initiation_client_data: {
-        dynamic_variables: dynamicVariables,
-        source_info: { source: 'twilio', version: '1.0.0' },
-      },
-    };
-
-    console.log('[EL OUTBOUND] scheduling outbound call.', {
-      delayMs: OUTBOUND_DELAY_MS,
-      etaIso: new Date(Date.now() + OUTBOUND_DELAY_MS).toISOString(),
-      Name: dynamicVariables.Name,
-      normalizedPhone,
-    });
-
-    setTimeout(() => {
-      sendElevenLabsOutboundCall(elevenLabsPayload)
-        .then(({ ok, status, rawText, parsedJson }) => {
-          if (ok) {
-            console.log('[EL OUTBOUND] delayed call succeeded.', {
-              status,
-              parsedJson,
-            });
-          } else {
-            console.error('[EL OUTBOUND] delayed call failed.', {
-              status,
-              raw: rawText?.slice(0, 2000) || null,
-            });
-          }
-        })
-        .catch((error) => {
-          console.error('[EL OUTBOUND] delayed call threw.', (error && error.stack) || error);
+      if (!normalizedPhone) {
+        console.warn('Lead received with invalid or missing phone number.', {
+          Name,
+          leadPhone,
         });
-    }, OUTBOUND_DELAY_MS);
+        return;
+      }
 
-    return res.status(200).json({
-      success: true,
-      message: `Outbound call scheduled via ElevenLabs in ${OUTBOUND_DELAY_MS / 1000} seconds.`,
-      delaySeconds: OUTBOUND_DELAY_MS / 1000,
-    });
-  } catch (error) {
-    console.error('Failed to process lead webhook.', error);
-    return res.status(500).json({ success: false, message: 'Internal server error.' });
-  }
+      if (!XI_API_KEY || !ELEVENLABS_AGENT_ID || !ELEVENLABS_AGENT_PHONE_NUMBER_ID) {
+        console.error('Lead webhook missing ElevenLabs configuration variables.');
+        return;
+      }
+
+      const safeName = (Name || '').trim();
+      const dynamicVariables = {
+        Name: safeName || 'Prospect',
+      };
+
+      const elevenLabsPayload = {
+        agent_id: ELEVENLABS_AGENT_ID,
+        agent_phone_number_id: ELEVENLABS_AGENT_PHONE_NUMBER_ID,
+        to_number: normalizedPhone,
+        conversation_initiation_client_data: {
+          dynamic_variables: dynamicVariables,
+          source_info: { source: 'twilio', version: '1.0.0' },
+        },
+      };
+
+      console.log('[EL OUTBOUND] scheduling outbound call.', {
+        delayMs: OUTBOUND_DELAY_MS,
+        etaIso: new Date(Date.now() + OUTBOUND_DELAY_MS).toISOString(),
+        Name: dynamicVariables.Name,
+        normalizedPhone,
+      });
+
+      setTimeout(() => {
+        sendElevenLabsOutboundCall(elevenLabsPayload)
+          .then(({ ok, status, rawText, parsedJson }) => {
+            if (ok) {
+              console.log('[EL OUTBOUND] delayed call succeeded.', {
+                status,
+                parsedJson,
+              });
+            } else {
+              console.error('[EL OUTBOUND] delayed call failed.', {
+                status,
+                raw: rawText?.slice(0, 2000) || null,
+              });
+            }
+          })
+          .catch((error) => {
+            console.error('[EL OUTBOUND] delayed call threw.', (error && error.stack) || error);
+          });
+      }, OUTBOUND_DELAY_MS);
+    } catch (error) {
+      console.error('[LEAD] Failed to process webhook after responding.', error);
+    }
+  });
 });
 
 app.post('/elevenlabs/postcall', async (req, res) => {

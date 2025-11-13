@@ -484,8 +484,10 @@ app.post('/gads/lead', (req, res) => {
   console.log('Incoming body type:', bodyType);
   console.log('Incoming body preview:', bodyPreview);
 
+  // Immediately acknowledge the form submission so Elementor always shows success
   res.status(200).json({ success: true });
 
+  // Run the rest of the lead processing logic in the background
   setImmediate(async () => {
     try {
       const providedKey = req.query?.key;
